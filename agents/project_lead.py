@@ -7,6 +7,9 @@ from crewai import LLM
 from dotenv import load_dotenv
 import os
 import sys
+from agents.ba_agent import business_analyst_agent
+from agents.design_agent import design_agent
+
 
 from sympy import python
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -59,7 +62,32 @@ def run_pipeline(business_requirement: str):
     )
 
     result = crew.kickoff()
-    return result
+    #p2 part below
+    print("\n📋 PROJECT BRIEF GENERATED:\n")
+    print(result)
+
+    # Step 2 — Business Analyst Agent
+    print("\n🧠 Running Business Analyst Agent...\n")
+
+    user_stories = business_analyst_agent(business_requirement)
+
+    print("User Stories Generated:\n")
+    print(user_stories)
+
+    # Step 3 — Design Agent
+    print("\n🏗 Running Design Agent...\n")
+
+    system_design = design_agent(user_stories)
+
+    print("System Design Generated:\n")
+    print(system_design)
+
+
+
+    return {
+    "project_brief": result,
+    "system_design": system_design
+    }
 
 if __name__ == "__main__":
     result = run_pipeline("Build a simple student attendance management system")
