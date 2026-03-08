@@ -1,0 +1,21 @@
+System Architecture
+
+Frontend:
+Backend:
+Database:
+
+Database Schema
+Tables:
+Relationships:
+
+API Endpoints
+
+GET:
+POST:
+PUT:
+DELETE:
+
+UI Components
+
+Pages:
+Components:
