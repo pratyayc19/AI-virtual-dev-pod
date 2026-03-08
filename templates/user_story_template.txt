@@ -1,0 +1,16 @@
+Epic:
+
+Description:
+
+User Story:
+As a [type of user]
+I want [feature]
+So that [benefit]
+
+Acceptance Criteria:
+1.
+2.
+3.
+
+Priority:
+High / Medium / Low
