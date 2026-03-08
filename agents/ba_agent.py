@@ -1,74 +1,89 @@
-import google.generativeai as genai
+# agents/ba_agent.py
+# Business Analyst Agent — Fixed by P1
+
+from crewai import Agent, Task, Crew, LLM
+from dotenv import load_dotenv
 import chromadb
 import os
+import sys
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+load_dotenv()
 
-genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-
-model = genai.GenerativeModel("gemini-2.5-flash")
-
-
+# ChromaDB setup
 client = chromadb.Client()
-
 collection = client.get_or_create_collection(name="org_templates")
 
-
 def load_templates():
-
-    with open("templates/user_story_template.txt","r") as f:
-        user_template = f.read()
-
-    with open("templates/design_template.txt","r") as f:
-        design_template = f.read()
-
-    collection.add(
-        documents=[user_template, design_template],
-        ids=["user_story_template","design_template"]
-    )
-
+    try:
+        with open("templates/user_story_template.txt", "r") as f:
+            user_template = f.read()
+        collection.add(
+            documents=[user_template],
+            ids=["user_story_template"]
+        )
+    except Exception as e:
+        print(f"Template load warning: {e}")
 
 load_templates()
 
-
 def retrieve_template(query):
+    try:
+        results = collection.query(query_texts=[query], n_results=1)
+        return results["documents"][0][0]
+    except:
+        return "As a [user], I want [goal] so that [benefit]. Acceptance criteria: [criteria]"
 
-    results = collection.query(
-        query_texts=[query],
-        n_results=1
+def get_llm():
+    return LLM(
+        model="groq/llama-3.1-8b-instant",
+        api_key=os.getenv("GROQ_API_KEY")
     )
 
-    return results["documents"][0][0]
+def create_ba_agent():
+    return Agent(
+        role="Business Analyst",
+        goal="Convert business requirements into clear structured user stories",
+        backstory="""You are a senior Business Analyst with 10 years of experience 
+        in IT projects. You excel at breaking down complex requirements into 
+        clear, actionable user stories with acceptance criteria.""",
+        llm=get_llm(),
+        verbose=True
+    )
 
-
-def business_analyst_agent(requirement):
-
+def run_ba_agent(requirement: str):
     template = retrieve_template("user story template")
+    ba = create_ba_agent()
 
-    prompt = f"""
-You are a Business Analyst.
+    task = Task(
+        description=f"""
+        Convert this business requirement into structured user stories.
+        
+        Use this template format:
+        {template}
+        
+        REQUIREMENT: {requirement}
+        
+        Output JSON with this structure:
+        {{
+            "epic": "epic name",
+            "user_stories": [
+                {{
+                    "story": "As a [user], I want [goal] so that [benefit]",
+                    "acceptance_criteria": ["criteria 1", "criteria 2"]
+                }}
+            ]
+        }}
+        """,
+        expected_output="JSON with epic and list of user stories with acceptance criteria",
+        agent=ba
+    )
 
-Use this template:
+    crew = Crew(agents=[ba], tasks=[task], verbose=True)
+    result = crew.kickoff()
+    return str(result)
 
-{template}
-
-Convert this requirement into JSON user stories.
-
-Requirement:
-{requirement}
-
-Return JSON format:
-
-{{
- "epic":"",
- "user_stories":[
-   {{
-     "story":"",
-     "acceptance_criteria":[]
-   }}
- ]
-}}
-"""
-
-    response = model.generate_content(prompt)
-
-    return response.text
+if __name__ == "__main__":
+    result = run_ba_agent("Build a student attendance management system")
+    print("\n✅ USER STORIES:")
+    print(result)
