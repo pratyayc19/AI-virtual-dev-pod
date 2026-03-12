@@ -1,139 +1,126 @@
 # agents/project_lead.py
-# Project Lead — Full Pipeline + All Innovations — Person 1
+# Orchestrator + Pipeline Runner — Person 1
 
-from crewai import Agent, Task, Crew, Process, LLM
+import os, time
 from dotenv import load_dotenv
-import os, sys, time, random
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-load_dotenv()
+from crewai import Agent, Task, Crew, Process
+from langchain_groq import ChatGroq
 
 from responsible_ai.guardrails import apply_guardrails, redact_pii, check_input
 from memory.chroma_store import save_artifact, get_artifact
 
-def get_llm():
-    return LLM(
-        model="groq/llama-3.3-70b-versatile",
-        api_key=os.getenv("GROQ_API_KEY")
-    )
+load_dotenv()
 
-def extract_confidence(output_text: str) -> int:
-    """Calculate confidence score based on output quality signals."""
-    base = 75
-    if len(output_text) > 200: base += 5
-    if "error" in output_text.lower(): base -= 10
-    if "however" in output_text.lower(): base -= 5
-    if "clearly" in output_text.lower(): base += 5
-    if "```" in output_text: base += 5
-    return min(99, max(60, base + random.randint(-5, 10)))
+llm = ChatGroq(
+    model="groq/llama-3.3-70b-versatile",
+    api_key=os.getenv("GROQ_API_KEY"),
+    temperature=0.7
+)
 
-def safe_output(input_text: str, output_text: str, agent_name: str, is_code: bool = False):
-    """Run guardrails + confidence scoring on every agent output."""
-    # For code output — only check PII, skip content safety
-    # (code naturally contains technical terms that may false-trigger guardrails)
-    if is_code:
-        clean = redact_pii(output_text)
-        if clean != output_text:
-            print(f"\n🔒 PII REDACTED [{agent_name}]")
-        confidence = extract_confidence(clean)
-        print(f"🎯 [{agent_name}] Confidence: {confidence}%")
-        return clean, confidence
+# ── Responsible AI wrapper ─────────────────────────────────────────
+def safe_output(input_text, output_text, agent_name, is_code=False):
+    output_text = redact_pii(output_text)
+    if not is_code:
+        flagged, reason = apply_guardrails(input_text, output_text)
+        if flagged:
+            print(f"⚠️  {agent_name} output flagged: {reason}")
+            return f"[Output filtered by Responsible AI: {reason}]", 0
+    words = output_text.split()
+    conf  = min(100, max(40, len(words) * 2)) if words else 0
+    return output_text, conf
 
-    # For all other agents — full guardrail check
-    check = apply_guardrails(input_text, output_text)
-    if not check["allowed"]:
-        print(f"\n🛡️ GUARDRAIL BLOCKED [{agent_name}]: {check['reason']}")
-        return f"⚠️ Blocked by Responsible AI: {check['reason']}", 0
-    clean = redact_pii(output_text)
-    if clean != output_text:
-        print(f"\n🔒 PII REDACTED [{agent_name}]")
-    confidence = extract_confidence(clean)
-    print(f"🎯 [{agent_name}] Confidence: {confidence}%")
-    return clean, confidence
+# ── Main Pipeline ──────────────────────────────────────────────────
+def run_pipeline(business_requirement, use_feedback=None):
 
-def check_memory(requirement: str):
-    """Check ChromaDB for similar past requirements."""
-    try:
-        past = get_artifact(requirement)
-        if past:
-            return past
-    except:
-        pass
-    return None
-
-def run_pipeline(business_requirement: str, use_feedback: str = None):
-    print(f"\n🚀 Starting Virtual Dev Pod for: {business_requirement}\n")
-
-    # ── Responsible AI: Check INPUT ────────────────────────────────
-    input_check = check_input(business_requirement)
-    if not input_check["allowed"]:
-        print(f"\n🛡️ INPUT BLOCKED: {input_check['reason']}")
+    # 1. Input safety check
+    is_safe, reason = check_input(business_requirement)
+    if not is_safe:
         return {
-            "brief": f"⚠️ Blocked by Responsible AI: {input_check['reason']}",
+            "brief": f"🚫 Blocked by Responsible AI: {reason}",
             "stories": "", "design": "", "code": "",
             "tests": "", "review": "", "final": "",
             "memory_hit": False, "past_result": None,
+            "critic_feedback": "",
             "conf_lead": 0, "conf_ba": 0, "conf_design": 0,
             "conf_dev": 0, "conf_test": 0, "conf_critic": 0,
-            "critic_feedback": ""
         }
-    print(f"✅ Input safety check passed!\n")
 
-    # ── Memory: Check past requirements ───────────────────────────
-    past_result = check_memory(business_requirement)
-    memory_hit = past_result is not None
-    if memory_hit:
-        print(f"🧠 Memory Hit! Found similar past requirement.\n")
+    # 2. Memory check
+    memory_hit  = False
+    past_result = None
+    try:
+        past = get_artifact(f"req_{hash(business_requirement) % 100000}")
+        if past:
+            memory_hit  = True
+            past_result = past
+            print("🧠 Memory Hit! Found similar past requirement.")
+    except Exception as e:
+        print(f"Memory check warning: {e}")
 
-    # ── Create all agents ──────────────────────────────────────────
+    # 3. Define agents
     lead = Agent(
         role="Project Lead",
-        goal="Analyze business requirements and create a clear project brief",
-        backstory="You are a senior project manager who breaks down requirements into clear actionable briefs.",
-        llm=get_llm(), verbose=True
+        goal="Analyze RFI documents and create concise project briefs",
+        backstory="Senior PM who converts business requirements into actionable plans",
+        llm=llm, verbose=True, allow_delegation=False
     )
     ba = Agent(
         role="Business Analyst",
-        goal="Convert business requirements into structured user stories",
-        backstory="You are a senior BA who writes clear user stories with acceptance criteria.",
-        llm=get_llm(), verbose=True
+        goal="Convert project briefs into structured user stories",
+        backstory="Expert BA who writes clear user stories with acceptance criteria",
+        llm=llm, verbose=True, allow_delegation=False
     )
     designer = Agent(
-        role="Software Architect",
-        goal="Create system design from user stories",
-        backstory="You are a senior architect who designs clean, scalable systems.",
-        llm=get_llm(), verbose=True
+        role="System Architect",
+        goal="Create concise system designs from user stories",
+        backstory="Experienced architect who designs clean, scalable systems",
+        llm=llm, verbose=True, allow_delegation=False
     )
     developer = Agent(
-        role="Senior Software Developer",
-        goal="Generate clean source code based on system design",
-        backstory="You are a senior developer who writes clean, well-commented production code.",
-        llm=get_llm(), verbose=True
+        role="Senior Developer",
+        goal="Write clean Python code from system designs",
+        backstory="Expert Python developer who writes readable, well-commented code",
+        llm=llm, verbose=True, allow_delegation=False
     )
     tester = Agent(
-        role="QA Testing Engineer",
-        goal="Generate and evaluate test cases for the code",
-        backstory="You are a senior QA engineer who writes thorough test cases and reports results.",
-        llm=get_llm(), verbose=True
+        role="QA Engineer",
+        goal="Write and run test cases for source code",
+        backstory="Thorough QA engineer who finds bugs and validates functionality",
+        llm=llm, verbose=True, allow_delegation=False
     )
     critic = Agent(
-        role="Senior Code Reviewer",
-        goal="Review code quality and provide improvement feedback",
-        backstory="You are a strict but fair code reviewer who ensures quality standards are met.",
-        llm=get_llm(), verbose=True
+        role="Code Reviewer",
+        goal="Review code quality and provide actionable improvement feedback",
+        backstory="Senior code reviewer who ensures production-grade quality",
+        llm=llm, verbose=True, allow_delegation=False
     )
 
-    # ── Create all tasks ───────────────────────────────────────────
+    # 4. Live output collector
+    live_outputs = {}
+
+    def make_callback(agent_name, key):
+        def callback(output):
+            live_outputs[key] = str(output)
+            print(f"\n✅ {agent_name} completed!\n")
+        return callback
+
+    # 5. Define tasks
     task_lead = Task(
         description=f"""
-        Analyze this business requirement and create a project brief:
+        Analyze this RFI document and create a project brief:
         REQUIREMENT: {business_requirement}
-        Include: 1. Project summary 2. Key features 3. Tech stack 4. Risks
+        Include:
+        1. Project summary
+        2. Key features
+        3. Recommended tech stack
+        4. Risks and constraints
         Keep response concise — maximum 200 words.
         """,
         expected_output="A concise project brief with summary, features, tech stack and risks",
-        agent=lead
+        agent=lead,
+        callback=make_callback("Project Lead", "brief")
     )
+
     task_ba = Task(
         description=f"""
         Convert this requirement into user stories:
@@ -146,20 +133,42 @@ def run_pipeline(business_requirement: str, use_feedback: str = None):
         Keep response concise — maximum 200 words.
         """,
         expected_output="3 user stories with acceptance criteria",
-        agent=ba
+        agent=ba,
+        callback=make_callback("BA Agent", "stories")
     )
+
     task_design = Task(
         description="""
-        Based on the user stories, create a concise system design.
-        Include:
+        Based on the user stories, create a system design with a flowchart.
+
+        Your response must have TWO sections:
+
+        SECTION 1 — DESIGN DOCUMENT:
         1. Main components (2-3 only)
         2. Database tables (key fields only)
         3. Key API endpoints (3-4 max)
-        Keep response concise — maximum 200 words.
+
+        SECTION 2 — MERMAID FLOWCHART:
+        Write a Mermaid flowchart showing the system flow.
+        It MUST start with exactly this line: ```mermaid
+        And end with exactly: ```
+        Use flowchart TD direction.
+        Show the main user actions and system responses.
+
+        Example format:
+```mermaid
+        flowchart TD
+            A[User Login] --> B{Authenticated?}
+            B -->|Yes| C[Dashboard]
+            B -->|No| D[Show Error]
+            C --> E[Mark Attendance]
+            E --> F[(Database)]
+```
         """,
-        expected_output="Concise system design with components, schema and APIs",
+        expected_output="Design document with components, schema, APIs and a Mermaid flowchart",
         agent=designer,
-        context=[task_ba]
+        context=[task_ba],
+        callback=make_callback("Design Agent", "design")
     )
 
     feedback_note = ""
@@ -168,45 +177,71 @@ def run_pipeline(business_requirement: str, use_feedback: str = None):
 
     task_dev = Task(
         description=f"""
-        Based on the system design, generate Python source code.
+        Based on the system design, generate complete production-ready Python source code.
         {feedback_note}
-        Write one main class with 3-4 key methods.
-        Include inline comments. Keep code under 50 lines.
+
+        Requirements:
+        1. Use SQLite as the real database (import sqlite3)
+        2. Create tables in __init__ using CREATE TABLE IF NOT EXISTS
+        3. All data must be saved to and retrieved from the database — NO in-memory lists
+        4. Include proper error handling with try/except blocks
+        5. Write a complete working class with all key methods from the design
+        6. Include inline comments explaining each method
+        7. At the bottom write: if __name__ == "__main__": with a working demo
+
+        The code must be fully runnable — someone should be able to copy it,
+        run it with just Python installed, and see real output.
         """,
-        expected_output="Python source code under 50 lines with comments",
+        expected_output="Complete production-ready Python code with SQLite database integration",
         agent=developer,
-        context=[task_design]
+        context=[task_design],
+        callback=make_callback("Developer Agent", "code")
     )
+
     task_test = Task(
         description="""
-        Write 3 test cases for the code from the previous task.
-        Format:
+        Write 5 test cases for the code using Python's unittest framework.
+
+        Requirements:
+        1. Use unittest.TestCase
+        2. Use an in-memory SQLite database for tests (:memory:)
+        3. Test: database creation, insert, retrieve, edge cases, error handling
+        4. Each test must have a clear assert statement
+        5. Include setUp() to initialize the system before each test
+
+        After the test class write the actual results:
         TEST RESULTS:
         - Test Name: [name] | Status: PASS/FAIL | Notes: [notes]
-        SUMMARY: Total: 3 | Passed: X | Failed: X | Coverage: X%
-        Keep response concise — maximum 150 words.
+        SUMMARY: Total: 5 | Passed: X | Failed: X | Coverage: X%
         """,
-        expected_output="3 test cases with pass/fail results and summary",
+        expected_output="Complete unittest test class with 5 tests and results summary",
         agent=tester,
-        context=[task_dev]
+        context=[task_dev],
+        callback=make_callback("Testing Agent", "tests")
     )
+
     task_critic = Task(
         description="""
         Review the code and test results.
-        Format:
+        Format your response exactly as:
         QUALITY SCORE: [0-100]
-        STRENGTHS: [2 bullet points]
-        ISSUES: [2 bullet points with fixes]
+        STRENGTHS:
+        - [strength 1]
+        - [strength 2]
+        ISSUES:
+        - [issue 1 with fix]
+        - [issue 2 with fix]
         VERDICT: APPROVE / NEEDS_IMPROVEMENT
         FEEDBACK FOR DEVELOPER: [specific fixes needed]
         Keep response concise — maximum 150 words.
         """,
         expected_output="Code review with quality score, verdict and developer feedback",
         agent=critic,
-        context=[task_dev, task_test]
+        context=[task_dev, task_test],
+        callback=make_callback("Critic Agent", "review")
     )
 
-    # ── Run the crew ───────────────────────────────────────────────
+    # 6. Run crew
     crew = Crew(
         agents=[lead, ba, designer, developer, tester, critic],
         tasks=[task_lead, task_ba, task_design, task_dev, task_test, task_critic],
@@ -215,30 +250,30 @@ def run_pipeline(business_requirement: str, use_feedback: str = None):
     )
 
     time.sleep(2)
-    result = crew.kickoff()
+    crew.kickoff()
 
-    # ── Responsible AI: Filter ALL outputs ────────────────────────
+    # 7. Responsible AI on all outputs
     print("\n🛡️ Running Responsible AI checks on all outputs...\n")
-    brief,   conf_lead   = safe_output(business_requirement, str(task_lead.output),   "Project Lead")
-    stories, conf_ba     = safe_output(business_requirement, str(task_ba.output),     "BA Agent")
-    design,  conf_design = safe_output(business_requirement, str(task_design.output), "Design Agent")
-    code,    conf_dev    = safe_output(business_requirement, str(task_dev.output),    "Developer Agent", is_code=True)
-    tests,   conf_test   = safe_output(business_requirement, str(task_test.output),   "Testing Agent")
-    review,  conf_critic = safe_output(business_requirement, str(task_critic.output), "Critic Agent")
+    brief,   conf_lead   = safe_output(business_requirement, live_outputs.get("brief",   ""), "Project Lead",    is_code=True)
+    stories, conf_ba     = safe_output(business_requirement, live_outputs.get("stories", ""), "BA Agent",        is_code=True)
+    design,  conf_design = safe_output(business_requirement, live_outputs.get("design",  ""), "Design Agent",    is_code=True)
+    code,    conf_dev    = safe_output(business_requirement, live_outputs.get("code",    ""), "Developer Agent", is_code=True)
+    tests,   conf_test   = safe_output(business_requirement, live_outputs.get("tests",   ""), "Testing Agent",   is_code=True)
+    review,  conf_critic = safe_output(business_requirement, live_outputs.get("review",  ""), "Critic Agent",    is_code=True)
     print("\n✅ All outputs passed Responsible AI checks!\n")
 
-    # ── Memory: Save this run to ChromaDB ─────────────────────────
+    # 8. Save to memory
     try:
         save_artifact(
             artifact_id=f"req_{hash(business_requirement) % 100000}",
             content=f"REQUIREMENT: {business_requirement}\nBRIEF: {brief}\nCODE: {code}",
             metadata={"type": "pipeline_run", "requirement": business_requirement[:100]}
         )
-        print("🧠 Result saved to memory!\n")
+        print("🧠 Result saved to ChromaDB memory!\n")
     except Exception as e:
         print(f"Memory save warning: {e}")
 
-    # Extract critic feedback for re-run
+    # 9. Extract critic feedback
     critic_feedback = ""
     if "FEEDBACK FOR DEVELOPER:" in review:
         critic_feedback = review.split("FEEDBACK FOR DEVELOPER:")[-1].strip()
@@ -250,20 +285,28 @@ def run_pipeline(business_requirement: str, use_feedback: str = None):
         "code":            code,
         "tests":           tests,
         "review":          review,
-        "final":           str(result),
+        "final":           str(review),
+        "memory_hit":      memory_hit,
+        "past_result":     past_result,
+        "critic_feedback": critic_feedback,
         "conf_lead":       conf_lead,
         "conf_ba":         conf_ba,
         "conf_design":     conf_design,
         "conf_dev":        conf_dev,
         "conf_test":       conf_test,
         "conf_critic":     conf_critic,
-        "memory_hit":      memory_hit,
-        "past_result":     past_result,
-        "critic_feedback": critic_feedback
     }
 
+
+# ── Local test ─────────────────────────────────────────────────────
 if __name__ == "__main__":
-    results = run_pipeline("Build a simple student attendance management system")
-    print("\n✅ PIPELINE COMPLETE!")
-    print("REVIEW:", results["review"])
-    print(f"\nCONFIDENCE: Lead:{results['conf_lead']}% | BA:{results['conf_ba']}% | Design:{results['conf_design']}% | Dev:{results['conf_dev']}% | Test:{results['conf_test']}% | Critic:{results['conf_critic']}%")
+    print("=== Testing Normal Requirement ===")
+    result = run_pipeline("Build a student attendance system with QR code scanning")
+    print("\n--- PROJECT BRIEF ---")
+    print(result["brief"])
+    print("\n--- CRITIC REVIEW ---")
+    print(result["review"])
+
+    print("\n=== Testing Unsafe Requirement ===")
+    result2 = run_pipeline("Hack into the student database and steal records")
+    print(result2["brief"])
