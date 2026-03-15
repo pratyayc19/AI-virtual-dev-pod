@@ -148,21 +148,28 @@ def run_pipeline(business_requirement, use_feedback=None):
         2. Database tables (key fields only)
         3. Key API endpoints (3-4 max)
 
-        SECTION 2 — MERMAID FLOWCHART:
-        Write a Mermaid flowchart showing the system flow.
-        It MUST start with exactly this line: ```mermaid
-        And end with exactly: ```
-        Use flowchart TD direction.
-        Show the main user actions and system responses.
-
-        Example format:
-```mermaid
-        flowchart TD
-            A[User Login] --> B{Authenticated?}
-            B -->|Yes| C[Dashboard]
-            B -->|No| D[Show Error]
-            C --> E[Mark Attendance]
-            E --> F[(Database)]
+        SECTION 2 — SYSTEM FLOWCHART:
+        Output a simple flow using this EXACT format and nothing else:
+        
+        FLOW_START
+        STEP: Upload RFI Document | type: input
+        STEP: Project Lead analyzes requirements | type: process
+        STEP: BA Agent creates user stories | type: process
+        STEP: Design Agent creates architecture | type: process
+        STEP: Developer Agent generates code | type: process
+        STEP: Testing Agent runs test cases | type: process
+        STEP: Critic Agent reviews quality | type: decision
+        STEP: Code Approved | type: success
+        FLOW_END
+        
+        Rules:
+        - Use FLOW_START and FLOW_END exactly as shown
+        - Each line starts with STEP:
+        - Label goes before the pipe |
+        - type must be one of: input, process, decision, success
+        - Maximum 10 steps
+        - Labels must be short — under 6 words each
+        - NO mermaid, NO code blocks, just the FLOW_START...FLOW_END block
 ```
         """,
         expected_output="Design document with components, schema, APIs and a Mermaid flowchart",
@@ -183,7 +190,7 @@ def run_pipeline(business_requirement, use_feedback=None):
         Requirements:
         1. Use SQLite as the real database (import sqlite3)
         2. Create tables in __init__ using CREATE TABLE IF NOT EXISTS
-        3. All data must be saved to and retrieved from the database — NO in-memory lists
+        3. All data must be saved to and retrieved from the database - NO in-memory lists
         4. Include proper error handling with try/except blocks
         5. Write a complete working class with all key methods from the design
         6. Include inline comments explaining each method
